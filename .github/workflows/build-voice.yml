@@ -1,0 +1,132 @@
+name: Build Proximity Voice APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  APP: proximity-voice
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          if [ ! -d "$APP" ]; then unzip -q proximity-voice-host.zip; fi
+          ls -la $APP
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      # ---------- cloudflared (arm64) ----------
+      - name: Clone cloudflared
+        run: |
+          TAG=$(git ls-remote --tags --refs https://github.com/cloudflare/cloudflared \
+            | awk -F/ '{print $NF}' | grep -E '^[0-9]{4}\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          echo "cloudflared $TAG"
+          git clone --depth 1 --branch "$TAG" https://github.com/cloudflare/cloudflared cf
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cf/go.mod
+          cache: false
+
+      # Android ไม่มี /etc/resolv.conf เลยแพตช์ให้ Go ใช้ DNS 1.1.1.1
+      - name: Build cloudflared for Android arm64
+        run: |
+          cat > cf/cmd/cloudflared/zz_androiddns.go <<'GO'
+          package main
+
+          import (
+              "context"
+              "net"
+              "time"
+          )
+
+          func init() {
+              net.DefaultResolver = &net.Resolver{
+                  PreferGo: true,
+                  Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+                      d := net.Dialer{Timeout: 5 * time.Second}
+                      return d.DialContext(ctx, network, "1.1.1.1:53")
+                  },
+              }
+          }
+          GO
+          OUT=$APP/android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p $OUT
+          cd cf
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" \
+            -o ../$OUT/libcloudflared.so ./cmd/cloudflared
+          ls -l ../$OUT
+
+      # ---------- ไอคอน (adaptive icon แบบ vector ไม่ต้องใช้รูป) ----------
+      - name: Generate app icon
+        run: |
+          RES=$APP/android/app/src/main/res
+          mkdir -p $RES/drawable $RES/mipmap-anydpi-v26
+
+          cat > $RES/drawable/ic_launcher_background.xml <<'XML'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#2E9B4F" android:pathData="M0,0h108v108h-108z"/>
+              <path android:fillColor="#3FB968" android:pathData="M0,70 L108,40 L108,108 L0,108z"/>
+          </vector>
+          XML
+
+          cat > $RES/drawable/ic_launcher_foreground.xml <<'XML'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M54,30 a8,8 0 0 1 8,8 v16 a8,8 0 0 1 -16,0 v-16 a8,8 0 0 1 8,-8 z"/>
+              <path android:strokeColor="#FFFFFF" android:strokeWidth="3.5"
+                  android:strokeLineCap="round" android:fillColor="#00000000"
+                  android:pathData="M42,52 a12,12 0 0 0 24,0 M54,64 v10 M46,74 h16"/>
+          </vector>
+          XML
+
+          cat > $RES/mipmap-anydpi-v26/ic_launcher.xml <<'XML'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          XML
+
+          cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
+
+          M=$APP/android/app/src/main/AndroidManifest.xml
+          sed -i 's#android:label="Proximity Voice"#android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:label="Proximity Voice"#' $M
+          grep -n "android:icon" $M
+
+      # ---------- บิลด์ + เซ็น (ใช้ pv-release.jks ที่อยู่ในโปรเจกต์) ----------
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build signed release APK
+        working-directory: ${{ env.APP }}/android
+        run: gradle assembleRelease --no-daemon
+
+      - name: Verify signature
+        run: |
+          APK=$(ls $APP/android/app/build/outputs/apk/release/*.apk | head -n1)
+          echo "APK: $APK"
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/apksigner verify --print-certs "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Proximity-Voice-APK
+          path: ${{ env.APP }}/android/app/build/outputs/apk/release/*.apk
