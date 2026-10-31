@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write        # ต้องใช้สร้าง Release เพื่อให้ตัวอัปเดตในแอปดึง APK ได้
+
 env:
   APP: proximity-voice
 
@@ -109,24 +112,35 @@ jobs:
           sed -i 's#android:label="Proximity Voice"#android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:label="Proximity Voice"#' $M
           grep -n "android:icon" $M
 
-      # ---------- บิลด์ + เซ็น (ใช้ pv-release.jks ที่อยู่ในโปรเจกต์) ----------
+      # ---------- บิลด์ + เซ็น (ใช้ pv-release.jks ในโปรเจกต์) ----------
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
 
+      # เลขรอบบิลด์ = versionCode ใช้เทียบเวอร์ชันตอนอัปเดตในแอป
       - name: Build signed release APK
         working-directory: ${{ env.APP }}/android
-        run: gradle assembleRelease --no-daemon
+        run: gradle assembleRelease --no-daemon -PverCode=${{ github.run_number }}
 
       - name: Verify signature
         run: |
           APK=$(ls $APP/android/app/build/outputs/apk/release/*.apk | head -n1)
           echo "APK: $APK"
           $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/apksigner verify --print-certs "$APK"
+          cp "$APK" ProximityVoice-${{ github.run_number }}.apk
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: Proximity-Voice-APK
-          path: ${{ env.APP }}/android/app/build/outputs/apk/release/*.apk
+          path: ProximityVoice-${{ github.run_number }}.apk
+
+      # ปล่อยเป็น Release (tag = build-เลขรอบ) ให้เมนู "อัปเดตแอป" ในแอปดึงไปติดตั้ง (repo ต้องเป็นสาธารณะ)
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: ProximityVoice-${{ github.run_number }}.apk
+          make_latest: true
