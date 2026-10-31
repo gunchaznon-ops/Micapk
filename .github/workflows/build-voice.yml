@@ -118,6 +118,21 @@ jobs:
         with:
           gradle-version: 8.9
 
+      # ทดสอบสูตรเสียง (ระยะ ซ้ายขวา ตะโกน กระซิบ) อัตโนมัติ ไม่ผ่านจะขึ้นแจ้งเตือนสีเหลืองแต่ยังบิลด์ต่อ
+      # (ถ้าอยากให้บิลด์ล้มเมื่อเทสต์ไม่ผ่าน ลบบรรทัด continue-on-error ออก)
+      - name: Unit tests (sound math)
+        working-directory: ${{ env.APP }}/android
+        continue-on-error: true
+        run: gradle testReleaseUnitTest --no-daemon
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: ${{ env.APP }}/android/app/build/reports/tests/
+          if-no-files-found: ignore
+
       # เลขรอบบิลด์ = versionCode ใช้เทียบเวอร์ชันตอนอัปเดตในแอป
       - name: Build signed release APK
         working-directory: ${{ env.APP }}/android
